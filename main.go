@@ -2,65 +2,78 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"time"
+	"log"
+	"net"
+	"os"
 
 	"github.com/go-redis/redis/v7"
 )
 
-func main() {
-	fmt.Println("Para probar...")
-	fmt.Println("$redis-cli")
-	fmt.Println(">LPUSH queue zzzz")
+var redisClient *redis.Client
 
-	client := redis.NewClient(&redis.Options{
+func main() {
+	redisClient = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "",
 		DB:       0,
 	})
 
-	pong, err := client.Ping().Result()
+	_, err := redisClient.Ping().Result()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	fmt.Println("Conectado a Redis: ", redisClient.Options().Addr)
 
-	fmt.Printf("PING: %s.\n", pong)
-
-	/*
-	ReceiveMessage es online pero no acumula mensajes...
-	subs := client.Subscribe("ch1")
-	fmt.Println("$redis-cli")
-
-	for {
-		msg, _ := subs.ReceiveMessage()
-		go func() {
-			fmt.Println(msg.Payload)
-			time.Sleep(5 * time.Second)
-			fmt.Println(".")
-		}()
+	sip, err := net.ListenPacket("udp", "localhost:9000")
+	if err != nil {
+		log.Fatal(err)
 	}
-	*/
-	lastErr :=""
+	defer sip.Close()
+	fmt.Println("Escuchando SIP: ", sip.LocalAddr())
 
+	rdp, err := net.ListenPacket("udp", "localhost:9001")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rdp.Close()
+	fmt.Println("Escuchando RDP: ", rdp.LocalAddr())
+
+	go listenSIP( sip )
+
+	listenRDP(rdp)
+}
+
+func listenSIP(sip net.PacketConn) {	
 	for {
-		result, err := client.BRPop(10 * time.Second, "queue").Result()
-		
+		buf := make([]byte, 1024)
+		n, addr, err := sip.ReadFrom(buf)
 		if err != nil {
-			if err.Error()!= lastErr {
-				fmt.Println(err.Error())
-				lastErr = err.Error()
-			}
-			time.Sleep(100 * time.Millisecond)				
-			
-		} else {
-			go func() {
-				fmt.Println(result[1])
-				time.Sleep(5 * time.Second)
-				fmt.Println(".")
-			}()	
+			continue
 		}
+		go saveSIP(sip, addr, buf[:n])
 	}
+}
+
+func saveSIP(sip net.PacketConn, addr net.Addr, buf []byte) {
+	time.Sleep(5 * time.Millisecond)
+	redisClient.RPush("SIP", buf)
+}
 
 
+func listenRDP(rdp net.PacketConn) {
+	for {
+		buf := make([]byte, 1024)
+		n, addr, err := rdp.ReadFrom(buf)
+		if err != nil {
+			continue
+		}
+		go saveRDP(rdp, addr, buf[:n])
+	}
+}
+
+func saveRDP(rdp net.PacketConn, addr net.Addr, buf []byte) {
+	time.Sleep(5 * time.Millisecond)
+	redisClient.RPush("RDP", buf)
 }
